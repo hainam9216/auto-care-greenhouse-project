@@ -1,0 +1,56 @@
+# Build outputs
+**/bin/
+**/obj/
+**/build/
+*.exe
+*.dll
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Arduino
+*.hex
+*.elf
+*.eep
+*.bin
+*.with_bootloader.*
+
+# Proteus
+*.pdsbak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NuGet
+**/packages/
+*.nupkg
+*.snupkg
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
