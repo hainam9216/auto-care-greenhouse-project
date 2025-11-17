@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 using System.Windows.Forms.DataVisualization.Charting;
+using MySql.Data.MySqlClient;
 
 namespace SmartGardenDashboard
 {
@@ -23,40 +24,279 @@ namespace SmartGardenDashboard
         public bool LedStatus { get; set; }
         public bool PumpStatus { get; set; }
         public bool MistStatus { get; set; }
+
+        public bool IsZeroRecord()
+        {
+            return Temperature == 0 ||
+                   Humidity == 0 ||
+                   SoilMoisture == 0 ||
+                   string.IsNullOrWhiteSpace(LightStatus);
+        }
     }
 
-    // ====================== DATA SERVICE ======================
+    // ====================== MYSQL SERVICE ======================
+    public class MySqlService
+    {
+        private string connectionString;
+        private bool isConnected;
+
+        public MySqlService()
+        {
+            isConnected = false;
+        }
+
+        public bool Connect(string server, string database, string username, string password, int port = 3306)
+        {
+            try
+            {
+                connectionString = $"Server={server};Port={port};Database={database};Uid={username};Pwd={password};CharSet=utf8;";
+
+                using (var conn = new MySqlConnection(connectionString))
+                {
+                    conn.Open();
+                    CreateTableIfNotExists(conn);
+                    isConnected = true;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi kết nối MySQL: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        private void CreateTableIfNotExists(MySqlConnection conn)
+        {
+            string createTableQuery = @"
+                CREATE TABLE IF NOT EXISTS sensor_data (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    timestamp DATETIME NOT NULL,
+                    hour INT,
+                    temperature FLOAT,
+                    humidity FLOAT,
+                    light_status VARCHAR(50),
+                    soil_moisture INT,
+                    fan_status BOOLEAN,
+                    led_status BOOLEAN,
+                    pump_status BOOLEAN,
+                    mist_status BOOLEAN,
+                    INDEX idx_timestamp (timestamp)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+
+            using (var cmd = new MySqlCommand(createTableQuery, conn))
+            {
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        public bool IsConnected => isConnected;
+
+        public bool InsertData(SensorData data)
+        {
+            if (!isConnected || data == null) return false;
+
+            if (data.IsZeroRecord())
+                return false;
+
+            try
+            {
+                using (var conn = new MySqlConnection(connectionString))
+                {
+                    conn.Open();
+                    string query = @"
+                        INSERT INTO sensor_data 
+                        (timestamp, hour, temperature, humidity, light_status, soil_moisture, 
+                         fan_status, led_status, pump_status, mist_status)
+                        VALUES 
+                        (@timestamp, @hour, @temperature, @humidity, @light_status, @soil_moisture,
+                         @fan_status, @led_status, @pump_status, @mist_status)";
+
+                    using (var cmd = new MySqlCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@timestamp", data.Timestamp);
+                        cmd.Parameters.AddWithValue("@hour", data.Hour);
+                        cmd.Parameters.AddWithValue("@temperature", data.Temperature);
+                        cmd.Parameters.AddWithValue("@humidity", data.Humidity);
+                        cmd.Parameters.AddWithValue("@light_status", data.LightStatus ?? "");
+                        cmd.Parameters.AddWithValue("@soil_moisture", data.SoilMoisture);
+                        cmd.Parameters.AddWithValue("@fan_status", data.FanStatus);
+                        cmd.Parameters.AddWithValue("@led_status", data.LedStatus);
+                        cmd.Parameters.AddWithValue("@pump_status", data.PumpStatus);
+                        cmd.Parameters.AddWithValue("@mist_status", data.MistStatus);
+
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi lưu dữ liệu: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        public List<SensorData> GetDataByDateRange(DateTime start, DateTime end)
+        {
+            var result = new List<SensorData>();
+            if (!isConnected) return result;
+
+            try
+            {
+                using (var conn = new MySqlConnection(connectionString))
+                {
+                    conn.Open();
+                    string query = @"
+                        SELECT * FROM sensor_data 
+                        WHERE timestamp BETWEEN @start AND @end 
+                          AND (temperature <> 0 OR humidity <> 0 OR soil_moisture <> 0)
+                        ORDER BY timestamp DESC 
+                        LIMIT 1000";
+
+                    using (var cmd = new MySqlCommand(query, conn))
+                    {
+                        cmd.Parameters.AddWithValue("@start", start);
+                        cmd.Parameters.AddWithValue("@end", end);
+
+                        using (var reader = cmd.ExecuteReader())
+                        {
+                            while (reader.Read())
+                            {
+                                result.Add(new SensorData
+                                {
+                                    Timestamp = reader.GetDateTime("timestamp"),
+                                    Hour = reader.GetInt32("hour"),
+                                    Temperature = reader.GetFloat("temperature"),
+                                    Humidity = reader.GetFloat("humidity"),
+                                    LightStatus = reader.GetString("light_status"),
+                                    SoilMoisture = reader.GetInt32("soil_moisture"),
+                                    FanStatus = reader.GetBoolean("fan_status"),
+                                    LedStatus = reader.GetBoolean("led_status"),
+                                    PumpStatus = reader.GetBoolean("pump_status"),
+                                    MistStatus = reader.GetBoolean("mist_status")
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Lỗi đọc dữ liệu: {ex.Message}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+
+            return result;
+        }
+
+        public SensorData GetLatestData()
+        {
+            if (!isConnected) return null;
+
+            try
+            {
+                using (var conn = new MySqlConnection(connectionString))
+                {
+                    conn.Open();
+                    string query = @"
+                        SELECT * FROM sensor_data 
+                        WHERE (temperature <> 0 OR humidity <> 0 OR soil_moisture <> 0)
+                        ORDER BY timestamp DESC 
+                        LIMIT 1";
+
+                    using (var cmd = new MySqlCommand(query, conn))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        if (reader.Read())
+                        {
+                            return new SensorData
+                            {
+                                Timestamp = reader.GetDateTime("timestamp"),
+                                Hour = reader.GetInt32("hour"),
+                                Temperature = reader.GetFloat("temperature"),
+                                Humidity = reader.GetFloat("humidity"),
+                                LightStatus = reader.GetString("light_status"),
+                                SoilMoisture = reader.GetInt32("soil_moisture"),
+                                FanStatus = reader.GetBoolean("fan_status"),
+                                LedStatus = reader.GetBoolean("led_status"),
+                                PumpStatus = reader.GetBoolean("pump_status"),
+                                MistStatus = reader.GetBoolean("mist_status")
+                            };
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+    }
+
+    // ====================== DATA SERVICE (with MySQL) ======================
     public class DataService
     {
         private readonly string dataFilePath;
         private List<SensorData> dataHistory;
+        private MySqlService mySqlService;
 
-        public DataService()
+        public DataService(MySqlService mySqlService = null)
         {
             string appDir = Path.Combine(Environment.GetFolderPath(
                 Environment.SpecialFolder.ApplicationData), "SmartGarden");
             Directory.CreateDirectory(appDir);
             dataFilePath = Path.Combine(appDir, "sensor_data.csv");
             dataHistory = new List<SensorData>();
+            this.mySqlService = mySqlService;
             LoadData();
         }
 
         public void AddData(SensorData data)
         {
+            if (data == null || data.IsZeroRecord())
+                return;
+
             dataHistory.Add(data);
             SaveData(data);
+
+            // Save to MySQL if connected
+            if (mySqlService?.IsConnected == true)
+            {
+                mySqlService.InsertData(data);
+            }
         }
 
         public List<SensorData> GetAllData() => dataHistory;
 
         public List<SensorData> GetDataByDateRange(DateTime start, DateTime end)
         {
-            return dataHistory.Where(d => d.Timestamp >= start && d.Timestamp <= end).ToList();
+            // Try to get from MySQL first if connected
+            if (mySqlService?.IsConnected == true)
+            {
+                return mySqlService.GetDataByDateRange(start, end);
+            }
+
+            // Fallback to local data (filter out zero rows)
+            return dataHistory
+                .Where(d => d.Timestamp >= start && d.Timestamp <= end)
+                .Where(d => d.Temperature != 0 || d.Humidity != 0 || d.SoilMoisture != 0)
+                .ToList();
         }
 
         public SensorData GetLatestData()
         {
-            return dataHistory.Count > 0 ? dataHistory[dataHistory.Count - 1] : null;
+            // Try MySQL first
+            if (mySqlService?.IsConnected == true)
+            {
+                var latest = mySqlService.GetLatestData();
+                if (latest != null) return latest;
+            }
+
+            // Fallback to local (bỏ bản ghi toàn 0)
+            return dataHistory
+                .Where(d => d.Temperature != 0 || d.Humidity != 0 || d.SoilMoisture != 0)
+                .LastOrDefault();
         }
 
         private void LoadData()
@@ -194,7 +434,11 @@ namespace SmartGardenDashboard
                         sensorData.MistStatus = line.Contains("BAT");
                 }
 
-                DataReceived?.Invoke(sensorData);
+                // THÊM KIỂM TRA NÀY
+                if (!sensorData.IsZeroRecord())
+                {
+                    DataReceived?.Invoke(sensorData);
+                }
             }
             catch { }
         }
@@ -216,17 +460,122 @@ namespace SmartGardenDashboard
         }
     }
 
+    // ====================== MYSQL CONFIG DIALOG ======================
+    public class MySqlConfigDialog : Form
+    {
+        private TextBox txtServer, txtDatabase, txtUsername, txtPassword, txtPort;
+        private Button btnConnect, btnCancel;
+        public string Server { get; private set; }
+        public string Database { get; private set; }
+        public string Username { get; private set; }
+        public string Password { get; private set; }
+        public int Port { get; private set; }
+
+        public MySqlConfigDialog()
+        {
+            InitializeComponents();
+        }
+
+        private void InitializeComponents()
+        {
+            this.Text = "Cấu hình MySQL";
+            this.Size = new Size(400, 300);
+            this.StartPosition = FormStartPosition.CenterParent;
+            this.FormBorderStyle = FormBorderStyle.FixedDialog;
+            this.MaximizeBox = false;
+            this.MinimizeBox = false;
+
+            Label lblTitle = new Label
+            {
+                Text = "KẾT NỐI MYSQL DATABASE",
+                Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                Location = new Point(20, 20),
+                AutoSize = true
+            };
+
+            Label lblServer = new Label { Text = "Server:", Location = new Point(20, 60), AutoSize = true };
+            txtServer = new TextBox { Location = new Point(120, 57), Width = 240, Text = "localhost" };
+
+            Label lblPort = new Label { Text = "Port:", Location = new Point(20, 90), AutoSize = true };
+            txtPort = new TextBox { Location = new Point(120, 87), Width = 240, Text = "3306" };
+
+            Label lblDatabase = new Label { Text = "Database:", Location = new Point(20, 120), AutoSize = true };
+            txtDatabase = new TextBox { Location = new Point(120, 117), Width = 240, Text = "smart_garden" };
+
+            Label lblUsername = new Label { Text = "Username:", Location = new Point(20, 150), AutoSize = true };
+            txtUsername = new TextBox { Location = new Point(120, 147), Width = 240, Text = "root" };
+
+            Label lblPassword = new Label { Text = "Password:", Location = new Point(20, 180), AutoSize = true };
+            txtPassword = new TextBox { Location = new Point(120, 177), Width = 240, UseSystemPasswordChar = true };
+
+            btnConnect = new Button
+            {
+                Text = "Kết nối",
+                Location = new Point(120, 220),
+                Width = 100,
+                BackColor = Color.FromArgb(46, 204, 113),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnConnect.Click += BtnConnect_Click;
+
+            btnCancel = new Button
+            {
+                Text = "Hủy",
+                Location = new Point(230, 220),
+                Width = 100,
+                BackColor = Color.FromArgb(231, 76, 60),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnCancel.Click += (s, e) => { this.DialogResult = DialogResult.Cancel; this.Close(); };
+
+            this.Controls.AddRange(new Control[] {
+                lblTitle, lblServer, txtServer, lblPort, txtPort,
+                lblDatabase, txtDatabase, lblUsername, txtUsername,
+                lblPassword, txtPassword, btnConnect, btnCancel
+            });
+        }
+
+        private void BtnConnect_Click(object sender, EventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(txtServer.Text) ||
+                string.IsNullOrWhiteSpace(txtDatabase.Text) ||
+                string.IsNullOrWhiteSpace(txtUsername.Text))
+            {
+                MessageBox.Show("Vui lòng điền đầy đủ thông tin!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (!int.TryParse(txtPort.Text, out int port))
+            {
+                MessageBox.Show("Port không hợp lệ!", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            Server = txtServer.Text;
+            Database = txtDatabase.Text;
+            Username = txtUsername.Text;
+            Password = txtPassword.Text;
+            Port = port;
+
+            this.DialogResult = DialogResult.OK;
+            this.Close();
+        }
+    }
+
     // ====================== MAIN FORM ======================
     public partial class MainForm : Form
     {
         private SerialService serialService;
         private DataService dataService;
+        private MySqlService mySqlService;
         private System.Windows.Forms.Timer updateTimer;
 
         // Controls
         private ComboBox cmbPorts;
-        private Button btnConnect, btnDisconnect;
-        private Label lblStatus;
+        private Button btnConnect, btnDisconnect, btnConfigMySQL;
+        private Label lblStatus, lblMySqlStatus;
         private Panel pnlCurrentData, pnlDeviceStatus, pnlAlerts;
         private Chart chartTemp, chartHumidity, chartSoil;
         private DateTimePicker dtpStart, dtpEnd;
@@ -240,9 +589,9 @@ namespace SmartGardenDashboard
 
         public MainForm()
         {
-            // Initialize services BEFORE InitializeComponent() since it uses them
             serialService = new SerialService();
-            dataService = new DataService();
+            mySqlService = new MySqlService();
+            dataService = new DataService(mySqlService);
 
             InitializeComponent();
 
@@ -258,7 +607,7 @@ namespace SmartGardenDashboard
 
         private void InitializeComponent()
         {
-            this.Text = "Smart Garden Dashboard";
+            this.Text = "Smart Garden Dashboard - MySQL Edition";
             this.Size = new Size(1400, 900);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(240, 240, 240);
@@ -326,7 +675,27 @@ namespace SmartGardenDashboard
                 Font = new Font("Segoe UI", 10, FontStyle.Bold)
             };
 
-            pnlTop.Controls.AddRange(new Control[] { lblTitle, cmbPorts, btnConnect, btnDisconnect, lblStatus });
+            btnConfigMySQL = new Button
+            {
+                Text = "⚙️ MySQL",
+                Location = new Point(950, 17),
+                Width = 90,
+                BackColor = Color.FromArgb(52, 152, 219),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnConfigMySQL.Click += BtnConfigMySQL_Click;
+
+            lblMySqlStatus = new Label
+            {
+                Text = "🗄️ MySQL: Chưa kết nối",
+                Location = new Point(1050, 20),
+                AutoSize = true,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            };
+
+            pnlTop.Controls.AddRange(new Control[] { lblTitle, cmbPorts, btnConnect, btnDisconnect, lblStatus, btnConfigMySQL, lblMySqlStatus });
             this.Controls.Add(pnlTop);
 
             // Main Container
@@ -335,7 +704,7 @@ namespace SmartGardenDashboard
                 Dock = DockStyle.Fill,
                 ColumnCount = 3,
                 RowCount = 2,
-                Padding = new Padding(10)
+                Padding = new Padding(10, 50, 10, 10)
             };
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
             mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
@@ -380,17 +749,17 @@ namespace SmartGardenDashboard
 
             Label lblTitle = new Label
             {
-                Text = "📊 DỮ LIỆU HIỆN TẠI",
+                Text = "DỮ LIỆU HIỆN TẠI",
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Location = new Point(10, 10),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(52, 73, 94)
             };
 
-            lblTemp = CreateDataLabel("🌡️ Nhiệt độ: -- °C", 50);
-            lblHumidity = CreateDataLabel("💧 Độ ẩm KK: -- %", 90);
-            lblLight = CreateDataLabel("💡 Ánh sáng: --", 130);
-            lblSoil = CreateDataLabel("🌿 Độ ẩm đất: -- %", 170);
+            lblTemp = CreateDataLabel("🌡Nhiệt độ: -- °C", 50);
+            lblHumidity = CreateDataLabel("Độ ẩm KK: -- %", 90);
+            lblLight = CreateDataLabel("Ánh sáng: --", 130);
+            lblSoil = CreateDataLabel("Độ ẩm đất: -- %", 170);
 
             pnlCurrentData.Controls.AddRange(new Control[] { lblTitle, lblTemp, lblHumidity, lblLight, lblSoil });
         }
@@ -407,17 +776,17 @@ namespace SmartGardenDashboard
 
             Label lblTitle = new Label
             {
-                Text = "⚙️ TRẠNG THÁI THIẾT BỊ",
+                Text = "TRẠNG THÁI THIẾT BỊ",
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Location = new Point(10, 10),
                 AutoSize = true,
                 ForeColor = Color.FromArgb(52, 73, 94)
             };
 
-            lblFan = CreateDeviceLabel("🌀 Quạt: TẮT", 50, Color.Gray);
-            lblLed = CreateDeviceLabel("💡 Đèn: TẮT", 90, Color.Gray);
-            lblPump = CreateDeviceLabel("💦 Bơm: TẮT", 130, Color.Gray);
-            lblMist = CreateDeviceLabel("🌫️ Phun sương: TẮT", 170, Color.Gray);
+            lblFan = CreateDeviceLabel("🌀 Quạt: TẮT", 50, Color.Black);
+            lblLed = CreateDeviceLabel("💡 Đèn: TẮT", 90, Color.Orange);
+            lblPump = CreateDeviceLabel("💦 Bơm: TẮT", 130, Color.RoyalBlue);
+            lblMist = CreateDeviceLabel("🌫️ Phun sương: TẮT", 170, Color.Blue);
 
             pnlDeviceStatus.Controls.AddRange(new Control[] { lblTitle, lblFan, lblLed, lblPump, lblMist });
         }
@@ -447,7 +816,7 @@ namespace SmartGardenDashboard
             };
             chartTemp.Series.Add(seriesTemp);
 
-            Title titleTemp = new Title("🌡️ NHIỆT ĐỘ THEO THỜI GIAN")
+            Title titleTemp = new Title("NHIỆT ĐỘ THEO THỜI GIAN")
             {
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(52, 73, 94)
@@ -477,7 +846,7 @@ namespace SmartGardenDashboard
             };
             chartHumidity.Series.Add(seriesHumidity);
 
-            Title titleHumidity = new Title("💧 ĐỘ ẨM KHÔNG KHÍ THEO THỜI GIAN")
+            Title titleHumidity = new Title("ĐỘ ẨM KHÔNG KHÍ THEO THỜI GIAN")
             {
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(52, 73, 94)
@@ -510,7 +879,7 @@ namespace SmartGardenDashboard
             };
             chartSoil.Series.Add(seriesSoil);
 
-            Title titleSoil = new Title("🌿 ĐỘ ẨM ĐẤT THEO THỜI GIAN")
+            Title titleSoil = new Title("ĐỘ ẨM ĐẤT THEO THỜI GIAN")
             {
                 Font = new Font("Segoe UI", 11, FontStyle.Bold),
                 ForeColor = Color.FromArgb(52, 73, 94)
@@ -530,7 +899,7 @@ namespace SmartGardenDashboard
 
             Label lblTitle = new Label
             {
-                Text = "⚠️ CẢNH BÁO",
+                Text = "CẢNH BÁO",
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Location = new Point(10, 10),
                 AutoSize = true,
@@ -540,7 +909,7 @@ namespace SmartGardenDashboard
             lstAlerts = new ListBox
             {
                 Location = new Point(10, 45),
-                Size = new Size(pnlAlerts.Width - 25, pnlAlerts.Height - 60),
+                Size = new Size(310, 220),
                 Font = new Font("Segoe UI", 9),
                 BorderStyle = BorderStyle.None,
                 BackColor = Color.FromArgb(255, 250, 240)
@@ -561,7 +930,7 @@ namespace SmartGardenDashboard
 
             Label lblTitle = new Label
             {
-                Text = "📜 LỊCH SỬ DỮ LIỆU",
+                Text = "LỊCH SỬ DỮ LIỆU",
                 Font = new Font("Segoe UI", 12, FontStyle.Bold),
                 Location = new Point(10, 10),
                 AutoSize = true
@@ -596,7 +965,7 @@ namespace SmartGardenDashboard
             dgvHistory = new DataGridView
             {
                 Location = new Point(10, 45),
-                Size = new Size(pnlBottom.Width - 20, 190),
+                Size = new Size(1380, 190),
                 ReadOnly = true,
                 AllowUserToAddRows = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
@@ -675,6 +1044,26 @@ namespace SmartGardenDashboard
             lblStatus.ForeColor = Color.White;
             btnConnect.Enabled = true;
             btnDisconnect.Enabled = false;
+        }
+
+        private void BtnConfigMySQL_Click(object sender, EventArgs e)
+        {
+            using (var dialog = new MySqlConfigDialog())
+            {
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    if (mySqlService.Connect(dialog.Server, dialog.Database, dialog.Username, dialog.Password, dialog.Port))
+                    {
+                        lblMySqlStatus.Text = "🗄️ MySQL: Đã kết nối";
+                        lblMySqlStatus.ForeColor = Color.LightGreen;
+                        MessageBox.Show("Kết nối MySQL thành công!", "Thông báo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                        // Reload data from MySQL
+                        LoadHistoricalData();
+                        UpdateCharts();
+                    }
+                }
+            }
         }
 
         private void OnDataReceived(SensorData data)
