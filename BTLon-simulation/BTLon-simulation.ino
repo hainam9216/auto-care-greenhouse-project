@@ -26,7 +26,7 @@ int soilThreshold = 70;
 #define SIMULATION true
 unsigned long lastUpdate = 0;
 unsigned long lastSerialTime = 0;
-const unsigned long serialInterval = 5000;
+const unsigned long serialInterval = 1000;
 int simHour = 0;
 
 // GIA TRI BAN DAU
